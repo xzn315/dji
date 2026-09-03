@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DJI Dock 3 可用版航线生成器 - 北航杭州国新院</title>
+<title>DJI Dock 3 可用版航线生成器 V3 - 北航杭州国新院</title>
 
 <style>
 html,body,#map-container{width:100%;height:100%;margin:0;padding:0}
@@ -41,6 +41,15 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:10px;background:#eaf2ff;color:#175cd3;margin-left:4px}
 .check-row{display:flex;align-items:center;gap:5px;margin-top:8px;font-size:12px}
 .check-row input{width:auto;margin:0}
+/* 航点使用自绘高对比度标记，避免在卫星底图上被屋顶、道路颜色淹没。 */
+.waypoint-marker{
+  width:30px;height:30px;box-sizing:border-box;border:3px solid #fff;border-radius:50%;
+  background:#0759c7;color:#fff;box-shadow:0 1px 7px rgba(0,0,0,.72);
+  font:700 13px/24px Arial,sans-serif;text-align:center;cursor:move
+}
+.waypoint-marker::after{content:"";position:absolute;left:50%;top:50%;width:38px;height:38px;
+  transform:translate(-50%,-50%);border:2px solid rgba(7,89,199,.42);border-radius:50%;pointer-events:none}
+.waypoint-marker.is-selected{background:#e53324;transform:scale(1.22);box-shadow:0 1px 10px rgba(190,24,24,.9)}
 </style>
 
 <script>
@@ -101,7 +110,7 @@ window._AMapSecurityConfig = {
     </div>
 
     <div class="option">
-      <input type="checkbox" id="closeRoute" checked onchange="updateLinePreview()">
+      <input type="checkbox" id="closeRoute" checked onchange="updateRoutePreview()">
       <label for="closeRoute"><b>闭合航线</b>：最后一个航点回到第一个航点</label>
     </div>
 
@@ -168,10 +177,20 @@ var routePath = [];
 var markers = [];
 var selectedWaypointIndex = -1;
 
+var routeHalo = new AMap.Polyline({
+  map: map,
+  strokeColor: "#FFFFFF",
+  strokeOpacity: 0.9,
+  strokeWeight: 9,
+  strokeLineJoin: 'round'
+});
+
 var polyline = new AMap.Polyline({
   map: map,
   strokeColor: "#FF0000",
-  strokeWeight: 4
+  strokeWeight: 4,
+  strokeOpacity: 0.95,
+  strokeLineJoin: 'round'
 });
 
 map.on('click', function(e) {
@@ -190,7 +209,9 @@ function createWaypointMarker(point, index) {
     map: map,
     draggable: true,
     cursor: 'move',
-    label: {content: String(index + 1), direction: 'top'}
+    content: waypointMarkerContent(index, false),
+    offset: new AMap.Pixel(-15, -15),
+    zIndex: 120
   });
   marker._routeIndex = index;
 
@@ -213,10 +234,15 @@ function createWaypointMarker(point, index) {
   return marker;
 }
 
+function waypointMarkerContent(index, selected) {
+  return '<div class="waypoint-marker' + (selected ? ' is-selected' : '') + '" title="航点 ' + (index + 1) + '">' + (index + 1) + '</div>';
+}
+
 function refreshWaypointMarkers() {
   markers.forEach(function(marker, index) {
     marker._routeIndex = index;
-    marker.setLabel({content: String(index + 1), direction: 'top'});
+    marker.setContent(waypointMarkerContent(index, index === selectedWaypointIndex));
+    marker.setzIndex(index === selectedWaypointIndex ? 200 : 120);
   });
 }
 
@@ -228,6 +254,7 @@ function selectWaypoint(index, announce) {
   hint.textContent = selectedWaypointIndex < 0
     ? '编辑：拖拽航点调整位置；右键航点可删除。'
     : '已选中航点 ' + (selectedWaypointIndex + 1) + '。可拖拽调整位置，或删除该航点。';
+  refreshWaypointMarkers();
   if (announce && selectedWaypointIndex >= 0) setStatus('已选中航点 ' + (selectedWaypointIndex + 1) + '。');
 }
 
@@ -261,11 +288,18 @@ function getFinalPoints() {
 
 function updateLinePreview() {
   if (!routePath.length) {
+    routeHalo.setPath([]);
     polyline.setPath([]);
     return;
   }
   var displayPath = getFinalPoints().map(function(p){ return [p.lng,p.lat]; });
+  routeHalo.setPath(displayPath);
   polyline.setPath(displayPath);
+}
+
+function updateRoutePreview() {
+  updateLinePreview();
+  updateRouteStats();
 }
 
 function haversineMeters(a,b) {
@@ -691,6 +725,7 @@ function clearMap() {
   routePath = [];
   selectWaypoint(-1, false);
   polyline.setPath([]);
+  routeHalo.setPath([]);
   updateRouteStats();
   setStatus('已清除所有航点。');
 }
