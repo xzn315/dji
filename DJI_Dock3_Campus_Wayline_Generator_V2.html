@@ -61,7 +61,7 @@ window._AMapSecurityConfig = {
 
   <div class="notice">
     本工具在高德地图上规划点位。高德地图坐标为 GCJ-02，DJI WPML 固定要求 WGS84；
-    导出时会执行 GCJ-02 → WGS84 近似逆变换。正式飞行前请用 DJI / RTK 实测点核验坐标。
+    导出时会执行 GCJ-02 → WGS84 迭代逆变换，以避免粗略反算带来的米级偏差。正式飞行前请用 DJI / RTK 实测点核验坐标。
   </div>
 
   <div class="section">
@@ -140,6 +140,8 @@ window._AMapSecurityConfig = {
   <div class="section">
     <div class="section-title">④ 导出控制器</div>
     <div class="stats" id="routeStats">航点：0<br>距离：0 m<br>坐标源：AMap GCJ-02</div>
+    <div class="info" id="waypointEditHint" style="margin-top:6px">编辑：拖拽航点调整位置；右键航点可删除。</div>
+    <button class="btn-outline" id="deleteWaypointBtn" onclick="deleteSelectedWaypoint()" disabled>删除选中的航点</button>
     
     <label class="check-row"><input type="checkbox" id="exportKmz" checked> 导出 DJI Dock 3 KMZ</label>
     <label class="check-row"><input type="checkbox" id="wgsDebugKml" checked> 同时导出 WGS84 调试 KML</label>
@@ -164,6 +166,7 @@ var map = new AMap.Map('map-container', {
 
 var routePath = [];
 var markers = [];
+var selectedWaypointIndex = -1;
 
 var polyline = new AMap.Polyline({
   map: map,
@@ -174,18 +177,75 @@ var polyline = new AMap.Polyline({
 map.on('click', function(e) {
   var lnglat = e.lnglat;
   var point = {lng: lnglat.getLng(), lat: lnglat.getLat()};
-
-  var marker = new AMap.Marker({
-    position: lnglat,
-    map: map,
-    label: {content: String(routePath.length + 1), direction: 'top'}
-  });
-  markers.push(marker);
-
   routePath.push(point);
+  markers.push(createWaypointMarker(point, routePath.length - 1));
+  selectWaypoint(routePath.length - 1, false);
   updateLinePreview();
   updateRouteStats();
 });
+
+function createWaypointMarker(point, index) {
+  var marker = new AMap.Marker({
+    position: [point.lng, point.lat],
+    map: map,
+    draggable: true,
+    cursor: 'move',
+    label: {content: String(index + 1), direction: 'top'}
+  });
+  marker._routeIndex = index;
+
+  marker.on('click', function() {
+    selectWaypoint(marker._routeIndex);
+  });
+  marker.on('dragend', function(e) {
+    var lnglat = e.lnglat;
+    var routeIndex = marker._routeIndex;
+    if (routeIndex < 0 || !routePath[routeIndex]) return;
+    routePath[routeIndex] = {lng: lnglat.getLng(), lat: lnglat.getLat()};
+    selectWaypoint(routeIndex, false);
+    updateLinePreview();
+    updateRouteStats();
+    setStatus('已更新航点 ' + (routeIndex + 1) + ' 的位置。', 'success');
+  });
+  marker.on('rightclick', function() {
+    deleteWaypoint(marker._routeIndex);
+  });
+  return marker;
+}
+
+function refreshWaypointMarkers() {
+  markers.forEach(function(marker, index) {
+    marker._routeIndex = index;
+    marker.setLabel({content: String(index + 1), direction: 'top'});
+  });
+}
+
+function selectWaypoint(index, announce) {
+  selectedWaypointIndex = index >= 0 && index < routePath.length ? index : -1;
+  var button = document.getElementById('deleteWaypointBtn');
+  var hint = document.getElementById('waypointEditHint');
+  button.disabled = selectedWaypointIndex < 0;
+  hint.textContent = selectedWaypointIndex < 0
+    ? '编辑：拖拽航点调整位置；右键航点可删除。'
+    : '已选中航点 ' + (selectedWaypointIndex + 1) + '。可拖拽调整位置，或删除该航点。';
+  if (announce && selectedWaypointIndex >= 0) setStatus('已选中航点 ' + (selectedWaypointIndex + 1) + '。');
+}
+
+function deleteWaypoint(index) {
+  if (index < 0 || index >= routePath.length) return;
+  markers[index].setMap(null);
+  markers.splice(index, 1);
+  routePath.splice(index, 1);
+  refreshWaypointMarkers();
+  selectWaypoint(-1, false);
+  updateLinePreview();
+  updateRouteStats();
+  setStatus('已删除航点 ' + (index + 1) + '。');
+}
+
+function deleteSelectedWaypoint() {
+  if (selectedWaypointIndex >= 0) deleteWaypoint(selectedWaypointIndex);
+}
 
 function getFinalPoints() {
   var points = routePath.slice();
@@ -261,7 +321,7 @@ function checkInputs() {
   return null;
 }
 
-/* ---------------- GCJ-02 -> WGS84 ---------------- */
+/* ---------------- GCJ-02 -> WGS84（迭代逆变换） ---------------- */
 function outOfChina(lon, lat) {
   return !(lon > 72.004 && lon < 137.8347 && lat > 0.8293 && lat < 55.8271);
 }
@@ -282,7 +342,7 @@ function transformLon(x,y) {
   return ret;
 }
 
-function gcj02ToWgs84(lon,lat) {
+function wgs84ToGcj02(lon,lat) {
   if (outOfChina(lon,lat)) return {lng:lon,lat:lat};
   var a=6378245.0, ee=0.00669342162296594323;
   var dLat=transformLat(lon-105.0,lat-35.0);
@@ -293,8 +353,23 @@ function gcj02ToWgs84(lon,lat) {
   var sqrtMagic=Math.sqrt(magic);
   dLat=(dLat*180.0)/((a*(1-ee))/(magic*sqrtMagic)*Math.PI);
   dLon=(dLon*180.0)/(a/sqrtMagic*Math.cos(radLat)*Math.PI);
-  var mgLat=lat+dLat, mgLon=lon+dLon;
-  return {lng:lon*2-mgLon, lat:lat*2-mgLat};
+  return {lng:lon+dLon, lat:lat+dLat};
+}
+
+function gcj02ToWgs84(lon,lat) {
+  if (outOfChina(lon,lat)) return {lng:lon,lat:lat};
+  // 求解 forward(WGS84) = GCJ-02。相较于 lon * 2 - mgLon 的单次近似，
+  // 此处持续用前向误差修正 WGS84 候选值，消除该近似造成的米级残差。
+  var wgsLon=lon, wgsLat=lat;
+  for (var i=0; i<12; i++) {
+    var gcj=wgs84ToGcj02(wgsLon,wgsLat);
+    var lonError=gcj.lng-lon;
+    var latError=gcj.lat-lat;
+    wgsLon-=lonError;
+    wgsLat-=latError;
+    if (Math.max(Math.abs(lonError), Math.abs(latError)) < 1e-10) break;
+  }
+  return {lng:wgsLon,lat:wgsLat};
 }
 
 function esc(s) {
@@ -614,6 +689,7 @@ function clearMap() {
   markers.forEach(function(m){ m.setMap(null); });
   markers = [];
   routePath = [];
+  selectWaypoint(-1, false);
   polyline.setPath([]);
   updateRouteStats();
   setStatus('已清除所有航点。');
