@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+<name>DJI Dock 3 WGS84 Debug Route</name>
+<description>仅用于核验 GCJ-02 → WGS84 经纬度。DJI 任务高度基准为 relativeToStartPoint，默认参数 70.00 m；本调试 KML 不把该高度解释为绝对海拔或严格 AGL。</description>
+<ExtendedData>
+<Data name="coordinateSource"><value>AMap GCJ-02 converted to WGS84</value></Data>
+<Data name="djiHeightMode"><value>relativeToStartPoint</value></Data>
+<Data name="taskHeight"><value>70.00 m</value></Data>
+</ExtendedData>
+<Placemark><name>WGS84 Route</name><LineString>
+<coordinates>
+119.97222376,30.36261086
+119.97262677,30.36301566
+119.97312560,30.36293125
+119.97325034,30.36246798
+119.97296405,30.36211385
+119.97240637,30.36214142
+119.97222376,30.36261086
+</coordinates></LineString></Placemark>
+</Document></kml>

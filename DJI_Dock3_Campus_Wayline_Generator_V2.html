@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DJI Dock 3 可用版航线生成器 - 北航杭州国新院</title>
+
+<style>
+html,body,#map-container{width:100%;height:100%;margin:0;padding:0}
+body{font-family:"Microsoft YaHei",sans-serif}
+#ui-panel{
+  position:absolute;top:14px;right:14px;width:330px;max-height:calc(100vh - 28px);
+  overflow:auto;background:rgba(255,255,255,.97);padding:16px 16px 14px;border-radius:10px;
+  box-shadow:0 3px 16px rgba(0,0,0,.22);z-index:999
+}
+h2{font-size:18px;margin:0 0 6px}
+.subtitle{font-size:12px;color:#666;margin-bottom:10px}
+.section{border-top:1px solid #eee;padding-top:11px;margin-top:11px}
+.section-title{font-size:13px;font-weight:700;margin-bottom:8px}
+label{font-size:13px}
+input,select{
+  box-sizing:border-box;width:100%;padding:7px 8px;margin-top:4px;border:1px solid #ccc;border-radius:5px;
+  background:#fff
+}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.option{margin:7px 0;font-size:13px}
+.option input{width:auto;margin-right:5px}
+button{
+  width:100%;padding:9px 10px;border:0;border-radius:5px;cursor:pointer;font-weight:700;margin-top:8px
+}
+.btn-primary{background:#1677ff;color:#fff}
+.btn-secondary{background:#666;color:#fff}
+.btn-outline{background:#fff;border:1px solid #aaa;color:#333}
+button:disabled{opacity:.5;cursor:not-allowed}
+.notice{font-size:11px;line-height:1.5;padding:8px;border-radius:6px;background:#fff7e6;color:#8a5a00}
+.info{font-size:11px;line-height:1.5;color:#555}
+.stats{font-size:12px;line-height:1.65}
+.status{font-size:12px;padding:8px;border-radius:6px;background:#f5f5f5;margin-top:8px;white-space:pre-wrap}
+.danger{color:#b42318}
+.success{color:#087443}
+.badge{display:inline-block;font-size:10px;padding:2px 6px;border-radius:10px;background:#eaf2ff;color:#175cd3;margin-left:4px}
+.check-row{display:flex;align-items:center;gap:5px;margin-top:8px;font-size:12px}
+.check-row input{width:auto;margin:0}
+</style>
+
+<script>
+window._AMapSecurityConfig = {
+  securityJsCode: 'cf0029223efd6a475d95248e7452f4c6'
+}
+</script>
+<script src="https://webapi.amap.com/maps?v=2.0&key=67096c7bdd43b579fb6dd301d160db9b"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+</head>
+
+<body>
+<div id="map-container"></div>
+
+<div id="ui-panel">
+  <h2>DJI Dock 3 航线生成器 <span class="badge">WPML / KMZ</span></h2>
+  <div class="subtitle">校园巡检 · Matrice 4D / 4TD · Cloud API 航线文件</div>
+
+  <div class="notice">
+    本工具在高德地图上规划点位。高德地图坐标为 GCJ-02，DJI WPML 固定要求 WGS84；
+    导出时会执行 GCJ-02 → WGS84 近似逆变换。正式飞行前请用 DJI / RTK 实测点核验坐标。
+  </div>
+
+  <div class="section">
+    <div class="section-title">① 飞行器与任务</div>
+    <label>飞行器型号
+      <select id="droneModel">
+        <option value="M4D">Matrice 4D</option>
+        <option value="M4TD">Matrice 4TD</option>
+      </select>
+    </label>
+
+    <div class="grid2" style="margin-top:8px">
+      <div>
+        <label>任务高度（m）
+          <input id="flyHeight" type="number" min="70" max="1500" step="1" value="70">
+        </label>
+      </div>
+      <div>
+        <label>飞行速度（m/s）
+          <input id="flightSpeed" type="number" min="1" max="15" step="0.5" value="5">
+        </label>
+      </div>
+    </div>
+    <div class="info" style="margin-top:6px">任务高度基准：<b>relativeToStartPoint</b>（相对起飞/航线起始点）。当前默认 70 m；这不是“任何地面位置都严格离地 70 m”。</div>
+
+    <div class="grid2" style="margin-top:8px">
+      <div>
+        <label>起飞安全高度（m）
+          <input id="takeoffSecurityHeight" type="number" min="8" max="1500" step="1" value="20">
+        </label>
+      </div>
+      <div>
+        <label>返航高度（m）
+          <input id="rthHeight" type="number" min="2" max="1500" step="1" value="70">
+        </label>
+      </div>
+    </div>
+
+    <div class="option">
+      <input type="checkbox" id="closeRoute" checked onchange="updateLinePreview()">
+      <label for="closeRoute"><b>闭合航线</b>：最后一个航点回到第一个航点</label>
+    </div>
+
+    <label style="display:block;margin-top:8px">负载影像格式
+      <select id="imageFormat"></select>
+    </label>
+  </div>
+
+  <div class="section">
+    <div class="section-title">② 航线参数（DJI WPML）</div>
+    <label>航向模式
+      <select id="headingMode">
+        <option value="followWayline">沿航线方向（推荐）</option>
+        <option value="fixed">锁定当前偏航角</option>
+      </select>
+    </label>
+
+    <label style="display:block;margin-top:8px">转弯模式
+      <select id="turnMode">
+        <option value="toPointAndStopWithDiscontinuityCurvature">到点停车（保守）</option>
+        <option value="coordinateTurn">协调转弯</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="section">
+    <div class="section-title">③ 航点拍照动作（DJI WPML ActionGroup）</div>
+    <label class="check-row"><input type="checkbox" id="takePhotoEnabled" checked> 到达航点后拍照</label>
+    <label class="check-row"><input type="checkbox" id="photoOnClosingPoint"> 闭合航线回到首点时也拍一张</label>
+    <label style="display:block;margin-top:8px">照片文件后缀前缀
+      <input id="photoSuffixPrefix" type="text" maxlength="24" value="campus_point" placeholder="例如 campus_point">
+    </label>
+    <div class="info" style="margin-top:6px">动作触发器：reachPoint；动作类型：takePhoto。镜头存储格式跟随上面的“负载影像格式”。</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">④ 导出控制器</div>
+    <div class="stats" id="routeStats">航点：0<br>距离：0 m<br>坐标源：AMap GCJ-02</div>
+    
+    <label class="check-row"><input type="checkbox" id="exportKmz" checked> 导出 DJI Dock 3 KMZ</label>
+    <label class="check-row"><input type="checkbox" id="wgsDebugKml" checked> 同时导出 WGS84 调试 KML</label>
+    
+    <button class="btn-primary" id="exportBtn" onclick="exportDock3KMZ()">生成并导出航线文件（另存为）</button>
+    <button class="btn-outline" onclick="exportWgsKml()">仅导出 WGS84 KML（调试）</button>
+    <button class="btn-secondary" onclick="clearMap()">清除所有航点</button>
+  </div>
+
+  <div class="section">
+    <div class="section-title">⑤ 导出状态</div>
+    <div class="status" id="status">等待规划航线。点击上方生成按钮将直接弹出原生“另存为”窗口。</div>
+  </div>
+</div>
+
+<script>
+var map = new AMap.Map('map-container', {
+  zoom: 18,
+  center: [119.976364, 30.363213],
+  layers: [new AMap.TileLayer.Satellite()]
+});
+
+var routePath = [];
+var markers = [];
+
+var polyline = new AMap.Polyline({
+  map: map,
+  strokeColor: "#FF0000",
+  strokeWeight: 4
+});
+
+map.on('click', function(e) {
+  var lnglat = e.lnglat;
+  var point = {lng: lnglat.getLng(), lat: lnglat.getLat()};
+
+  var marker = new AMap.Marker({
+    position: lnglat,
+    map: map,
+    label: {content: String(routePath.length + 1), direction: 'top'}
+  });
+  markers.push(marker);
+
+  routePath.push(point);
+  updateLinePreview();
+  updateRouteStats();
+});
+
+function getFinalPoints() {
+  var points = routePath.slice();
+  var close = document.getElementById('closeRoute').checked;
+  if (close && points.length >= 2) {
+    var first = points[0], last = points[points.length - 1];
+    if (Math.abs(first.lng-last.lng) > 1e-12 || Math.abs(first.lat-last.lat) > 1e-12) {
+      points.push({lng:first.lng, lat:first.lat});
+    }
+  }
+  return points;
+}
+
+function updateLinePreview() {
+  if (!routePath.length) {
+    polyline.setPath([]);
+    return;
+  }
+  var displayPath = getFinalPoints().map(function(p){ return [p.lng,p.lat]; });
+  polyline.setPath(displayPath);
+}
+
+function haversineMeters(a,b) {
+  var R = 6371008.8;
+  var p1 = a.lat * Math.PI/180, p2 = b.lat * Math.PI/180;
+  var dp = (b.lat-a.lat) * Math.PI/180;
+  var dl = (b.lng-a.lng) * Math.PI/180;
+  var x = Math.sin(dp/2)*Math.sin(dp/2) + Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)*Math.sin(dl/2);
+  return 2*R*Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+}
+
+function routeDistance(points) {
+  var d=0;
+  for(var i=1;i<points.length;i++) d += haversineMeters(points[i-1], points[i]);
+  return d;
+}
+
+function updateRouteStats() {
+  var finalPoints = getFinalPoints();
+  var d = routeDistance(finalPoints);
+  document.getElementById('routeStats').innerHTML =
+    '原始航点：' + routePath.length + '<br>' +
+    '导出航点：' + finalPoints.length + '<br>' +
+    '距离：' + (d >= 1000 ? (d/1000).toFixed(2)+' km' : d.toFixed(1)+' m') + '<br>' +
+    '坐标源：AMap GCJ-02 → DJI WGS84';
+}
+
+function setStatus(text, cls) {
+  var el=document.getElementById('status');
+  el.className='status ' + (cls||'');
+  el.textContent=text;
+}
+
+function checkInputs() {
+  var points=getFinalPoints();
+  var h=parseFloat(document.getElementById('flyHeight').value);
+  var speed=parseFloat(document.getElementById('flightSpeed').value);
+  var takeoff=parseFloat(document.getElementById('takeoffSecurityHeight').value);
+  var rth=parseFloat(document.getElementById('rthHeight').value);
+
+  if (routePath.length < 2) return '至少需要 2 个航点。';
+  if (!Number.isFinite(h) || h < 70 || h > 1500) return '飞行高度必须在 70–1500 m。';
+  if (!Number.isFinite(speed) || speed < 1 || speed > 15) return '飞行速度必须在 1–15 m/s。';
+  if (!Number.isFinite(takeoff) || takeoff < 8 || takeoff > 1500) return 'Dock 起飞安全高度必须在 8–1500 m。';
+  if (!Number.isFinite(rth) || rth < 2 || rth > 1500) return '返航高度必须在 2–1500 m。';
+  if (points.length > 65535) return '航点数量超过 DJI WPML 的 65535 上限。';
+
+  for(var i=1;i<points.length;i++) {
+    if (haversineMeters(points[i-1], points[i]) < 0.5) {
+      return '存在相邻航点距离小于 0.5 m，请检查重复点。';
+    }
+  }
+  return null;
+}
+
+/* ---------------- GCJ-02 -> WGS84 ---------------- */
+function outOfChina(lon, lat) {
+  return !(lon > 72.004 && lon < 137.8347 && lat > 0.8293 && lat < 55.8271);
+}
+
+function transformLat(x,y) {
+  var ret=-100.0+2.0*x+3.0*y+0.2*y*y+0.1*x*y+0.2*Math.sqrt(Math.abs(x));
+  ret+=(20.0*Math.sin(6.0*x*Math.PI)+20.0*Math.sin(2.0*x*Math.PI))*2.0/3.0;
+  ret+=(20.0*Math.sin(y*Math.PI)+40.0*Math.sin(y/3.0*Math.PI))*2.0/3.0;
+  ret+=(160.0*Math.sin(y/12.0*Math.PI)+320*Math.sin(y*Math.PI/30.0))*2.0/3.0;
+  return ret;
+}
+
+function transformLon(x,y) {
+  var ret=300.0+x+2.0*y+0.1*x*x+0.1*x*y+0.1*Math.sqrt(Math.abs(x));
+  ret+=(20.0*Math.sin(6.0*x*Math.PI)+20.0*Math.sin(2.0*x*Math.PI))*2.0/3.0;
+  ret+=(20.0*Math.sin(x*Math.PI)+40.0*Math.sin(x/3.0*Math.PI))*2.0/3.0;
+  ret+=(150.0*Math.sin(x/12.0*Math.PI)+300.0*Math.sin(x/30.0*Math.PI))*2.0/3.0;
+  return ret;
+}
+
+function gcj02ToWgs84(lon,lat) {
+  if (outOfChina(lon,lat)) return {lng:lon,lat:lat};
+  var a=6378245.0, ee=0.00669342162296594323;
+  var dLat=transformLat(lon-105.0,lat-35.0);
+  var dLon=transformLon(lon-105.0,lat-35.0);
+  var radLat=lat/180.0*Math.PI;
+  var magic=Math.sin(radLat);
+  magic=1-ee*magic*magic;
+  var sqrtMagic=Math.sqrt(magic);
+  dLat=(dLat*180.0)/((a*(1-ee))/(magic*sqrtMagic)*Math.PI);
+  dLon=(dLon*180.0)/(a/sqrtMagic*Math.cos(radLat)*Math.PI);
+  var mgLat=lat+dLat, mgLon=lon+dLon;
+  return {lng:lon*2-mgLon, lat:lat*2-mgLat};
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                  .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+}
+
+function nowMs() { return Date.now(); }
+
+function updateImageFormatOptions() {
+  var model=document.getElementById('droneModel').value;
+  var select=document.getElementById('imageFormat');
+  var options = model==='M4TD'
+    ? [['wide','广角'],['zoom','变焦'],['ir','红外'],['wide,ir','广角+红外'],['wide,zoom,ir','广角+变焦+红外']]
+    : [['wide','广角'],['zoom','变焦'],['wide,zoom','广角+变焦']];
+  select.innerHTML=options.map(function(o){ return '<option value="'+o[0]+'">'+o[1]+'</option>'; }).join('');
+  select.value = model==='M4TD' ? 'wide,ir' : 'wide';
+}
+
+function getModelConfig() {
+  var model=document.getElementById('droneModel').value;
+  if(model==='M4TD') {
+    return {name:'Matrice 4TD', droneEnum:100, droneSubEnum:1, payloadEnum:99};
+  }
+  return {name:'Matrice 4D', droneEnum:100, droneSubEnum:0, payloadEnum:98};
+}
+
+function missionConfigXml(cfg, speed, takeoff, rth) {
+  return [
+    '<wpml:missionConfig>',
+    '<wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>',
+    '<wpml:finishAction>goHome</wpml:finishAction>',
+    '<wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>',
+    '<wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>',
+    '<wpml:takeOffSecurityHeight>'+takeoff.toFixed(1)+'</wpml:takeOffSecurityHeight>',
+    '<wpml:globalTransitionalSpeed>'+speed.toFixed(1)+'</wpml:globalTransitionalSpeed>',
+    '<wpml:globalRTHHeight>'+rth.toFixed(1)+'</wpml:globalRTHHeight>',
+    '<wpml:droneInfo>',
+    '<wpml:droneEnumValue>'+cfg.droneEnum+'</wpml:droneEnumValue>',
+    '<wpml:droneSubEnumValue>'+cfg.droneSubEnum+'</wpml:droneSubEnumValue>',
+    '</wpml:droneInfo>',
+    '<wpml:payloadInfo>',
+    '<wpml:payloadEnumValue>'+cfg.payloadEnum+'</wpml:payloadEnumValue>',
+    '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>',
+    '</wpml:payloadInfo>',
+    '</wpml:missionConfig>'
+  ].join('');
+}
+
+function getPhotoActionConfig(imageFormat) {
+  var enabled = document.getElementById('takePhotoEnabled').checked;
+  var prefix = (document.getElementById('photoSuffixPrefix').value || 'campus_point')
+    .trim().replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 24) || 'campus_point';
+  var photoOnClosingPoint = document.getElementById('photoOnClosingPoint').checked;
+  return {enabled: enabled, prefix: prefix, imageFormat: imageFormat, photoOnClosingPoint: photoOnClosingPoint};
+}
+
+function actionGroupXml(index, imageFormat, prefix) {
+  return [
+    '<wpml:actionGroup>',
+    '<wpml:actionGroupId>'+index+'</wpml:actionGroupId>',
+    '<wpml:actionGroupStartIndex>'+index+'</wpml:actionGroupStartIndex>',
+    '<wpml:actionGroupEndIndex>'+index+'</wpml:actionGroupEndIndex>',
+    '<wpml:actionGroupMode>sequence</wpml:actionGroupMode>',
+    '<wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger>',
+    '<wpml:action>',
+    '<wpml:actionId>0</wpml:actionId>',
+    '<wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>',
+    '<wpml:actionActuatorFuncParam>',
+    '<wpml:fileSuffix>'+esc(prefix+'_'+String(index+1))+'</wpml:fileSuffix>',
+    '<wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>',
+    '<wpml:payloadLensIndex>'+esc(imageFormat)+'</wpml:payloadLensIndex>',
+    '<wpml:useGlobalPayloadLensIndex>1</wpml:useGlobalPayloadLensIndex>',
+    '</wpml:actionActuatorFuncParam>',
+    '</wpml:action>',
+    '</wpml:actionGroup>'
+  ].join('');
+}
+
+function photoActionsForPoint(i, photoCfg, totalPoints) {
+  if (!photoCfg.enabled) return '';
+  var isClosingDuplicate = document.getElementById('closeRoute').checked && i === totalPoints - 1 && totalPoints >= 2;
+  if (isClosingDuplicate && !photoCfg.photoOnClosingPoint) return '';
+  return actionGroupXml(i, photoCfg.imageFormat, photoCfg.prefix);
+}
+
+function templateKml(cfg, points, height, speed, takeoff, rth, headingMode, turnMode, imageFormat, photoCfg) {
+  var ts=nowMs();
+  var placemarks=points.map(function(p,i){
+    var w=gcj02ToWgs84(p.lng,p.lat);
+    return [
+      '<Placemark>',
+      '<Point><coordinates>'+w.lng.toFixed(8)+','+w.lat.toFixed(8)+'</coordinates></Point>',
+      '<wpml:index>'+i+'</wpml:index>',
+      '<wpml:ellipsoidHeight>'+height.toFixed(2)+'</wpml:ellipsoidHeight>',
+      '<wpml:height>'+height.toFixed(2)+'</wpml:height>',
+      '<wpml:useGlobalHeight>1</wpml:useGlobalHeight>',
+      '<wpml:useGlobalSpeed>1</wpml:useGlobalSpeed>',
+      '<wpml:useGlobalHeadingParam>1</wpml:useGlobalHeadingParam>',
+      '<wpml:useGlobalTurnParam>1</wpml:useGlobalTurnParam>',
+      photoActionsForPoint(i, photoCfg, points.length),
+      '</Placemark>'
+    ].join('');
+  }).join('');
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.2">',
+    '<Document>',
+    '<wpml:author>Campus Dock 3 Wayline Generator</wpml:author>',
+    '<wpml:createTime>'+ts+'</wpml:createTime>',
+    '<wpml:updateTime>'+ts+'</wpml:updateTime>',
+    missionConfigXml(cfg,speed,takeoff,rth),
+    '<Folder>',
+    '<wpml:templateType>waypoint</wpml:templateType>',
+    '<wpml:templateId>0</wpml:templateId>',
+    '<wpml:waylineCoordinateSysParam>',
+    '<wpml:coordinateMode>WGS84</wpml:coordinateMode>',
+    '<wpml:heightMode>relativeToStartPoint</wpml:heightMode>',
+    '<wpml:positioningType>GPS</wpml:positioningType>',
+    '</wpml:waylineCoordinateSysParam>',
+    '<wpml:autoFlightSpeed>'+speed.toFixed(1)+'</wpml:autoFlightSpeed>',
+    '<wpml:gimbalPitchMode>manual</wpml:gimbalPitchMode>',
+    '<wpml:globalWaypointHeadingParam>',
+    '<wpml:waypointHeadingMode>'+esc(headingMode)+'</wpml:waypointHeadingMode>',
+    '<wpml:waypointHeadingAngle>0</wpml:waypointHeadingAngle>',
+    '</wpml:globalWaypointHeadingParam>',
+    '<wpml:globalWaypointTurnMode>'+esc(turnMode)+'</wpml:globalWaypointTurnMode>',
+    '<wpml:globalHeight>'+height.toFixed(2)+'</wpml:globalHeight>',
+    '<wpml:payloadParam><wpml:payloadPositionIndex>0</wpml:payloadPositionIndex><wpml:imageFormat>'+esc(imageFormat)+'</wpml:imageFormat></wpml:payloadParam>',
+    placemarks,
+    '</Folder>',
+    '</Document>',
+    '</kml>'
+  ].join('\n');
+}
+
+function waylinesWpml(cfg, points, height, speed, takeoff, rth, headingMode, turnMode, photoCfg) {
+  var placemarks=points.map(function(p,i){
+    var w=gcj02ToWgs84(p.lng,p.lat);
+    return [
+      '<Placemark>',
+      '<Point><coordinates>'+w.lng.toFixed(8)+','+w.lat.toFixed(8)+'</coordinates></Point>',
+      '<wpml:index>'+i+'</wpml:index>',
+      '<wpml:executeHeight>'+height.toFixed(2)+'</wpml:executeHeight>',
+      '<wpml:waypointSpeed>'+speed.toFixed(1)+'</wpml:waypointSpeed>',
+      '<wpml:waypointHeadingParam>',
+      '<wpml:waypointHeadingMode>'+esc(headingMode)+'</wpml:waypointHeadingMode>',
+      '</wpml:waypointHeadingParam>',
+      '<wpml:waypointTurnParam>',
+      '<wpml:waypointTurnMode>'+esc(turnMode)+'</wpml:waypointTurnMode>',
+      '<wpml:waypointTurnDampingDist>0</wpml:waypointTurnDampingDist>',
+      '</wpml:waypointTurnParam>',
+      photoActionsForPoint(i, photoCfg, points.length),
+      '</Placemark>'
+    ].join('');
+  }).join('');
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.2">',
+    '<Document>',
+    missionConfigXml(cfg,speed,takeoff,rth),
+    '<Folder>',
+    '<wpml:templateId>0</wpml:templateId>',
+    '<wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>',
+    '<wpml:waylineId>0</wpml:waylineId>',
+    '<wpml:autoFlightSpeed>'+speed.toFixed(1)+'</wpml:autoFlightSpeed>',
+    placemarks,
+    '</Folder>',
+    '</Document>',
+    '</kml>'
+  ].join('\n');
+}
+
+function wgs84DebugKml(points, height) {
+  var coords=points.map(function(p){
+    var w=gcj02ToWgs84(p.lng,p.lat);
+    return w.lng.toFixed(8)+','+w.lat.toFixed(8);
+  }).join('\n');
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2">',
+    '<Document>',
+    '<name>DJI Dock 3 WGS84 Debug Route</name>',
+    '<description>仅用于核验 GCJ-02 → WGS84 经纬度。DJI 任务高度基准为 relativeToStartPoint，默认参数 '+height.toFixed(2)+' m；本调试 KML 不把该高度解释为绝对海拔或严格 AGL。</description>',
+    '<ExtendedData>',
+    '<Data name="coordinateSource"><value>AMap GCJ-02 converted to WGS84</value></Data>',
+    '<Data name="djiHeightMode"><value>relativeToStartPoint</value></Data>',
+    '<Data name="taskHeight"><value>'+height.toFixed(2)+' m</value></Data>',
+    '</ExtendedData>',
+    '<Placemark><name>WGS84 Route</name><LineString>',
+    '<coordinates>',
+    coords,
+    '</coordinates></LineString></Placemark>',
+    '</Document></kml>'
+  ].join('\n');
+}
+
+/* ---------------- 核心保存逻辑（直接强行触发原生“另存为”弹窗） ---------------- */
+async function saveBlob(blob, suggestedName, description, ext, mime) {
+  // 1. 优先尝试现代 File System Access API 唤起系统保存框
+  if ('showSaveFilePicker' in window) {
+    try {
+      var handle = await window.showSaveFilePicker({
+        suggestedName: suggestedName,
+        types: [{
+          description: description,
+          accept: { [mime]: [ext] }
+        }]
+      });
+      var writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return true;
+    } catch (err) {
+      if (err.name === 'AbortError') return false; // 用户主动取消
+      console.warn('showSaveFilePicker 唤起失败，使用传统下载:', err);
+    }
+  }
+
+  // 2. 备用传统下载
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = suggestedName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+  return true;
+}
+
+async function exportDock3KMZ() {
+  var exportKmzChecked = document.getElementById('exportKmz').checked;
+  var exportKmlChecked = document.getElementById('wgsDebugKml').checked;
+  
+  if(!exportKmzChecked && !exportKmlChecked) {
+    alert('请至少勾选一种导出文件。');
+    return;
+  }
+  var error = checkInputs();
+  if(error) {
+    setStatus('❌ ' + error, 'danger');
+    alert(error);
+    return;
+  }
+  if(exportKmzChecked && typeof JSZip === 'undefined') {
+    setStatus('❌ JSZip 未加载，无法生成 KMZ。请检查网络连接后刷新页面。', 'danger');
+    return;
+  }
+
+  var btn = document.getElementById('exportBtn');
+  btn.disabled = true;
+  try {
+    var points = getFinalPoints();
+    var height = parseFloat(document.getElementById('flyHeight').value);
+    var speed = parseFloat(document.getElementById('flightSpeed').value);
+    var takeoff = parseFloat(document.getElementById('takeoffSecurityHeight').value);
+    var rth = parseFloat(document.getElementById('rthHeight').value);
+    var heading = document.getElementById('headingMode').value;
+    var turn = document.getElementById('turnMode').value;
+    var cfg = getModelConfig();
+    var imageFormat = document.getElementById('imageFormat').value;
+    var photoCfg = getPhotoActionConfig(imageFormat);
+
+    if(exportKmzChecked) {
+      setStatus('正在生成 KMZ（' + (photoCfg.enabled ? '含每航点 takePhoto Action' : '不含拍照 Action') + '）并准备打开另存为窗口…');
+      var template = templateKml(cfg, points, height, speed, takeoff, rth, heading, turn, imageFormat, photoCfg);
+      var waylines = waylinesWpml(cfg, points, height, speed, takeoff, rth, heading, turn, photoCfg);
+      var zip = new JSZip();
+      var wpmz = zip.folder('wpmz');
+      wpmz.file('template.kml', template);
+      wpmz.file('waylines.wpml', waylines);
+      
+      var blob = await zip.generateAsync({type:'blob', compression:'DEFLATE', compressionOptions:{level:6}});
+      var ok = await saveBlob(blob, 'campus_dock3_wayline.kmz', 'DJI Dock 3 KMZ', '.kmz', 'application/vnd.google-earth.kmz');
+      if(!ok) {
+        setStatus('已取消 KMZ 保存。');
+        return;
+      }
+    }
+
+    if(exportKmlChecked) {
+      setStatus('正在准备保存 WGS84 调试 KML…');
+      var kml = wgs84DebugKml(points, height);
+      var kmlOk = await saveBlob(new Blob([kml], {type:'application/vnd.google-earth.kml+xml'}), 'campus_dock3_wgs84_debug.kml', 'WGS84 KML', '.kml', 'application/vnd.google-earth.kml+xml');
+      if(!kmlOk && !exportKmzChecked) {
+        setStatus('已取消 KML 保存。');
+        return;
+      }
+    }
+
+    setStatus('✅ 文件导出处理完成！', 'success');
+  } catch(err) {
+    console.error(err);
+    setStatus('❌ 生成失败：' + err.message, 'danger');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function exportWgsKml() {
+  var error = checkInputs();
+  if(error) {
+    setStatus('❌ ' + error, 'danger');
+    alert(error);
+    return;
+  }
+  var points = getFinalPoints();
+  var height = parseFloat(document.getElementById('flyHeight').value);
+  var kml = wgs84DebugKml(points, height);
+  await saveBlob(new Blob([kml], {type:'application/vnd.google-earth.kml+xml'}), 'campus_dock3_wgs84_debug.kml', 'WGS84 KML', '.kml', 'application/vnd.google-earth.kml+xml');
+  setStatus('已导出 WGS84 调试 KML。', 'success');
+}
+
+function clearMap() {
+  markers.forEach(function(m){ m.setMap(null); });
+  markers = [];
+  routePath = [];
+  polyline.setPath([]);
+  updateRouteStats();
+  setStatus('已清除所有航点。');
+}
+
+updateRouteStats();
+updateImageFormatOptions();
+document.getElementById('droneModel').addEventListener('change', updateImageFormatOptions);
+</script>
+</body>
+</html>
