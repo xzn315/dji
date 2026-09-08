@@ -95,14 +95,16 @@ window._AMapSecurityConfig = {
       </div>
       <div>
         <label>返航高度（m）
-          <input id="rthHeight" type="number" min="2" max="1500" step="1" value="70">
+          <input id="rthHeight" type="number" min="2" max="1500" step="1" value="45" readonly>
         </label>
       </div>
     </div>
 
+    <div class="info" style="margin-top:6px">返航高度由下方 Cloud API 回填；接口未返回有效值时，按 <b>45 m</b> 导出。</div>
+
     <div class="option">
-      <input type="checkbox" id="closeRoute" checked onchange="updateLinePreview()">
-      <label for="closeRoute"><b>闭合航线</b>：最后一个航点回到第一个航点</label>
+      <input type="checkbox" id="closeRoute" onchange="updateLinePreview()">
+      <label for="closeRoute"><b>闭合巡检点</b>：最后一个巡检点回到第一个巡检点（通常不要勾选；返航由 Dock 3 goHome 完成）</label>
     </div>
 
     <label style="display:block;margin-top:8px">负载影像格式
@@ -111,7 +113,20 @@ window._AMapSecurityConfig = {
   </div>
 
   <div class="section">
-    <div class="section-title">② 航线参数（DJI WPML）</div>
+    <div class="section-title">② Dock 3 / Cloud API 参考值</div>
+    <label>Cloud API 地址
+      <input id="cloudApiUrl" type="url" placeholder="https://.../api/...">
+    </label>
+    <label style="display:block;margin-top:8px">访问令牌（可选）
+      <input id="cloudApiToken" type="password" autocomplete="off" placeholder="Bearer token（不会写入文件）">
+    </label>
+    <button class="btn-outline" type="button" onclick="loadCloudMissionConfig()">从 Cloud API 获取 Dock 3 参数</button>
+    <div class="info" style="margin-top:6px">响应需含起飞参考点（<code>longitude/latitude</code> 或 <code>lng/lat</code>）和可选 <code>rth_height</code>。坐标必须是 WGS84；高度缺失时返航高度自动为 45 m。</div>
+    <div class="stats" id="dockConfigStats" style="margin-top:7px"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">③ 航线参数（DJI WPML）</div>
     <label>航向模式
       <select id="headingMode">
         <option value="followWayline">沿航线方向（推荐）</option>
@@ -128,7 +143,7 @@ window._AMapSecurityConfig = {
   </div>
 
   <div class="section">
-    <div class="section-title">③ 航点拍照动作（DJI WPML ActionGroup）</div>
+    <div class="section-title">④ 航点拍照动作（DJI WPML ActionGroup）</div>
     <label class="check-row"><input type="checkbox" id="takePhotoEnabled" checked> 到达航点后拍照</label>
     <label class="check-row"><input type="checkbox" id="photoOnClosingPoint"> 闭合航线回到首点时也拍一张</label>
     <label style="display:block;margin-top:8px">照片文件后缀前缀
@@ -138,7 +153,7 @@ window._AMapSecurityConfig = {
   </div>
 
   <div class="section">
-    <div class="section-title">④ 导出控制器</div>
+    <div class="section-title">⑤ 导出控制器</div>
     <div class="stats" id="routeStats">航点：0<br>距离：0 m<br>坐标源：AMap GCJ-02</div>
     
     <label class="check-row"><input type="checkbox" id="exportKmz" checked> 导出 DJI Dock 3 KMZ</label>
@@ -150,7 +165,7 @@ window._AMapSecurityConfig = {
   </div>
 
   <div class="section">
-    <div class="section-title">⑤ 导出状态</div>
+    <div class="section-title">⑥ 导出状态</div>
     <div class="status" id="status">等待规划航线。点击上方生成按钮将直接弹出原生“另存为”窗口。</div>
   </div>
 </div>
@@ -164,6 +179,8 @@ var map = new AMap.Map('map-container', {
 
 var routePath = [];
 var markers = [];
+var dock3Config = null;
+var DEFAULT_RTH_HEIGHT = 45;
 
 var polyline = new AMap.Polyline({
   map: map,
@@ -233,6 +250,97 @@ function updateRouteStats() {
     '坐标源：AMap GCJ-02 → DJI WGS84';
 }
 
+function updateDockConfigStats() {
+  var el = document.getElementById('dockConfigStats');
+  if (!dock3Config) {
+    el.textContent = '尚未加载 Dock 3 参数：导出前必须从 Cloud API 获取。';
+    return;
+  }
+  el.innerHTML = 'Dock 3 起飞参考点（WGS84）：' + dock3Config.lng.toFixed(8) + ', ' + dock3Config.lat.toFixed(8) +
+    (Number.isFinite(dock3Config.alt) ? ', ' + dock3Config.alt.toFixed(1) + ' m' : '') + '<br>' +
+    '返航高度：' + dock3Config.rth.toFixed(1) + ' m' + (dock3Config.rthFallback ? '（接口未提供，已采用 45 m）' : '（Cloud API）');
+}
+
+function findCloudCoordinate(value) {
+  if (!value || typeof value !== 'object') return null;
+  var lng = Number(value.longitude !== undefined ? value.longitude : value.lng);
+  var lat = Number(value.latitude !== undefined ? value.latitude : value.lat);
+  if (Number.isFinite(lng) && Number.isFinite(lat) && Math.abs(lng) <= 180 && Math.abs(lat) <= 90) {
+    return {lng: lng, lat: lat, alt: Number(value.ellipsoid_height !== undefined ? value.ellipsoid_height : (value.altitude !== undefined ? value.altitude : value.alt))};
+  }
+  for (var key in value) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      var found = findCloudCoordinate(value[key]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findTakeoffCoordinate(value) {
+  if (!value || typeof value !== 'object') return null;
+  for (var key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    var normalized = key.toLowerCase().replace(/[^a-z]/g, '');
+    if (normalized.indexOf('takeoff') !== -1 || normalized.indexOf('launch') !== -1 || normalized.indexOf('dock') !== -1) {
+      var direct = findCloudCoordinate(value[key]);
+      if (direct) return direct;
+    }
+  }
+  for (var childKey in value) {
+    if (Object.prototype.hasOwnProperty.call(value, childKey) && typeof value[childKey] === 'object') {
+      var found = findTakeoffCoordinate(value[childKey]);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findCloudNumber(value, names) {
+  if (!value || typeof value !== 'object') return null;
+  for (var key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    if (names.indexOf(key.toLowerCase()) !== -1) {
+      var n = Number(value[key]);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  for (var childKey in value) {
+    if (Object.prototype.hasOwnProperty.call(value, childKey) && typeof value[childKey] === 'object') {
+      var found = findCloudNumber(value[childKey], names);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+async function loadCloudMissionConfig() {
+  var url = document.getElementById('cloudApiUrl').value.trim();
+  var token = document.getElementById('cloudApiToken').value.trim();
+  if (!url) { setStatus('❌ 请填写 Cloud API 地址。', 'danger'); return; }
+  try {
+    setStatus('正在从 Cloud API 获取 Dock 3 参考值…');
+    var headers = {Accept: 'application/json'};
+    if (token) headers.Authorization = token.indexOf('Bearer ') === 0 ? token : 'Bearer ' + token;
+    var response = await fetch(url, {headers: headers});
+    if (!response.ok) throw new Error('Cloud API 返回 HTTP ' + response.status);
+    var data = await response.json();
+    var point = findTakeoffCoordinate(data) || findCloudCoordinate(data);
+    if (!point) throw new Error('响应中未找到 longitude/latitude（或 lng/lat）起飞参考点');
+    var cloudRth = findCloudNumber(data, ['rth_height', 'rthheight', 'globalrthheight', 'return_home_height', 'returnhomeheight']);
+    var rthFallback = !Number.isFinite(cloudRth) || cloudRth < 2 || cloudRth > 1500;
+    dock3Config = {lng: point.lng, lat: point.lat, alt: point.alt, rth: rthFallback ? DEFAULT_RTH_HEIGHT : cloudRth, rthFallback: rthFallback};
+    document.getElementById('rthHeight').value = dock3Config.rth.toFixed(1);
+    updateDockConfigStats();
+    setStatus('✅ 已加载 Dock 3 起飞参考点和返航高度。', 'success');
+  } catch (err) {
+    dock3Config = null;
+    document.getElementById('rthHeight').value = DEFAULT_RTH_HEIGHT;
+    updateDockConfigStats();
+    setStatus('❌ Cloud API 获取失败：' + err.message + '。未导出，避免使用未知 Dock 参考点。', 'danger');
+  }
+}
+
 function setStatus(text, cls) {
   var el=document.getElementById('status');
   el.className='status ' + (cls||'');
@@ -247,6 +355,8 @@ function checkInputs() {
   var rth=parseFloat(document.getElementById('rthHeight').value);
 
   if (routePath.length < 2) return '至少需要 2 个航点。';
+  if (routePath.length > 15) return '巡检航点最多为 15 个。';
+  if (!dock3Config) return '请先从 Cloud API 获取 Dock 3 起飞参考点。';
   if (!Number.isFinite(h) || h < 70 || h > 1500) return '飞行高度必须在 70–1500 m。';
   if (!Number.isFinite(speed) || speed < 1 || speed > 15) return '飞行速度必须在 1–15 m/s。';
   if (!Number.isFinite(takeoff) || takeoff < 8 || takeoff > 1500) return 'Dock 起飞安全高度必须在 8–1500 m。';
@@ -322,7 +432,8 @@ function getModelConfig() {
   return {name:'Matrice 4D', droneEnum:100, droneSubEnum:0, payloadEnum:98};
 }
 
-function missionConfigXml(cfg, speed, takeoff, rth) {
+function missionConfigXml(cfg, speed, takeoff, rth, dock) {
+  var takeoffRef = dock.lat.toFixed(8) + ',' + dock.lng.toFixed(8) + ',' + (Number.isFinite(dock.alt) ? dock.alt.toFixed(2) : '0.00');
   return [
     '<wpml:missionConfig>',
     '<wpml:flyToWaylineMode>safely</wpml:flyToWaylineMode>',
@@ -330,6 +441,7 @@ function missionConfigXml(cfg, speed, takeoff, rth) {
     '<wpml:exitOnRCLost>executeLostAction</wpml:exitOnRCLost>',
     '<wpml:executeRCLostAction>goBack</wpml:executeRCLostAction>',
     '<wpml:takeOffSecurityHeight>'+takeoff.toFixed(1)+'</wpml:takeOffSecurityHeight>',
+    '<wpml:takeOffRefPoint>'+takeoffRef+'</wpml:takeOffRefPoint>',
     '<wpml:globalTransitionalSpeed>'+speed.toFixed(1)+'</wpml:globalTransitionalSpeed>',
     '<wpml:globalRTHHeight>'+rth.toFixed(1)+'</wpml:globalRTHHeight>',
     '<wpml:droneInfo>',
@@ -381,7 +493,7 @@ function photoActionsForPoint(i, photoCfg, totalPoints) {
   return actionGroupXml(i, photoCfg.imageFormat, photoCfg.prefix);
 }
 
-function templateKml(cfg, points, height, speed, takeoff, rth, headingMode, turnMode, imageFormat, photoCfg) {
+function templateKml(cfg, points, height, speed, takeoff, rth, headingMode, turnMode, imageFormat, photoCfg, dock) {
   var ts=nowMs();
   var placemarks=points.map(function(p,i){
     var w=gcj02ToWgs84(p.lng,p.lat);
@@ -407,7 +519,7 @@ function templateKml(cfg, points, height, speed, takeoff, rth, headingMode, turn
     '<wpml:author>Campus Dock 3 Wayline Generator</wpml:author>',
     '<wpml:createTime>'+ts+'</wpml:createTime>',
     '<wpml:updateTime>'+ts+'</wpml:updateTime>',
-    missionConfigXml(cfg,speed,takeoff,rth),
+    missionConfigXml(cfg,speed,takeoff,rth,dock),
     '<Folder>',
     '<wpml:templateType>waypoint</wpml:templateType>',
     '<wpml:templateId>0</wpml:templateId>',
@@ -432,7 +544,7 @@ function templateKml(cfg, points, height, speed, takeoff, rth, headingMode, turn
   ].join('\n');
 }
 
-function waylinesWpml(cfg, points, height, speed, takeoff, rth, headingMode, turnMode, photoCfg) {
+function waylinesWpml(cfg, points, height, speed, takeoff, rth, headingMode, turnMode, photoCfg, dock) {
   var placemarks=points.map(function(p,i){
     var w=gcj02ToWgs84(p.lng,p.lat);
     return [
@@ -457,7 +569,7 @@ function waylinesWpml(cfg, points, height, speed, takeoff, rth, headingMode, tur
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.2">',
     '<Document>',
-    missionConfigXml(cfg,speed,takeoff,rth),
+    missionConfigXml(cfg,speed,takeoff,rth,dock),
     '<Folder>',
     '<wpml:templateId>0</wpml:templateId>',
     '<wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>',
@@ -470,11 +582,11 @@ function waylinesWpml(cfg, points, height, speed, takeoff, rth, headingMode, tur
   ].join('\n');
 }
 
-function wgs84DebugKml(points, height) {
-  var coords=points.map(function(p){
+function wgs84DebugKml(points, height, dock) {
+  var coords=[dock.lng.toFixed(8)+','+dock.lat.toFixed(8)].concat(points.map(function(p){
     var w=gcj02ToWgs84(p.lng,p.lat);
     return w.lng.toFixed(8)+','+w.lat.toFixed(8);
-  }).join('\n');
+  })).concat([dock.lng.toFixed(8)+','+dock.lat.toFixed(8)]).join('\n');
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<kml xmlns="http://www.opengis.net/kml/2.2">',
@@ -485,6 +597,8 @@ function wgs84DebugKml(points, height) {
     '<Data name="coordinateSource"><value>AMap GCJ-02 converted to WGS84</value></Data>',
     '<Data name="djiHeightMode"><value>relativeToStartPoint</value></Data>',
     '<Data name="taskHeight"><value>'+height.toFixed(2)+' m</value></Data>',
+    '<Data name="dock3TakeoffRefPoint"><value>'+dock.lat.toFixed(8)+','+dock.lng.toFixed(8)+'</value></Data>',
+    '<Data name="returnMode"><value>finishAction=goHome (Dock 3)</value></Data>',
     '</ExtendedData>',
     '<Placemark><name>WGS84 Route</name><LineString>',
     '<coordinates>',
@@ -562,8 +676,8 @@ async function exportDock3KMZ() {
 
     if(exportKmzChecked) {
       setStatus('正在生成 KMZ（' + (photoCfg.enabled ? '含每航点 takePhoto Action' : '不含拍照 Action') + '）并准备打开另存为窗口…');
-      var template = templateKml(cfg, points, height, speed, takeoff, rth, heading, turn, imageFormat, photoCfg);
-      var waylines = waylinesWpml(cfg, points, height, speed, takeoff, rth, heading, turn, photoCfg);
+      var template = templateKml(cfg, points, height, speed, takeoff, rth, heading, turn, imageFormat, photoCfg, dock3Config);
+      var waylines = waylinesWpml(cfg, points, height, speed, takeoff, rth, heading, turn, photoCfg, dock3Config);
       var zip = new JSZip();
       var wpmz = zip.folder('wpmz');
       wpmz.file('template.kml', template);
@@ -579,7 +693,7 @@ async function exportDock3KMZ() {
 
     if(exportKmlChecked) {
       setStatus('正在准备保存 WGS84 调试 KML…');
-      var kml = wgs84DebugKml(points, height);
+      var kml = wgs84DebugKml(points, height, dock3Config);
       var kmlOk = await saveBlob(new Blob([kml], {type:'application/vnd.google-earth.kml+xml'}), 'campus_dock3_wgs84_debug.kml', 'WGS84 KML', '.kml', 'application/vnd.google-earth.kml+xml');
       if(!kmlOk && !exportKmzChecked) {
         setStatus('已取消 KML 保存。');
@@ -605,7 +719,7 @@ async function exportWgsKml() {
   }
   var points = getFinalPoints();
   var height = parseFloat(document.getElementById('flyHeight').value);
-  var kml = wgs84DebugKml(points, height);
+  var kml = wgs84DebugKml(points, height, dock3Config);
   await saveBlob(new Blob([kml], {type:'application/vnd.google-earth.kml+xml'}), 'campus_dock3_wgs84_debug.kml', 'WGS84 KML', '.kml', 'application/vnd.google-earth.kml+xml');
   setStatus('已导出 WGS84 调试 KML。', 'success');
 }
@@ -620,6 +734,7 @@ function clearMap() {
 }
 
 updateRouteStats();
+updateDockConfigStats();
 updateImageFormatOptions();
 document.getElementById('droneModel').addEventListener('change', updateImageFormatOptions);
 </script>
